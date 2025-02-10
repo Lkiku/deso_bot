@@ -19,13 +19,18 @@ BARK_KEY = os.getenv('BARK_KEY')
 # 交易参数
 TARGET_WALLET = os.getenv('TARGET_WALLET')
 LARGE_ORDER_THRESHOLD = float(os.getenv('LARGE_ORDER_THRESHOLD', '100000'))  # 大额订单阈值
-LARGE_ORDER_THRESHOLD_OPEN = float(os.getenv('LARGE_ORDER_THRESHOLD_OPEN', '100'))  # 大额订单阈值
+LARGE_ORDER_THRESHOLD_OPEN = float(os.getenv('LARGE_ORDER_THRESHOLD_OPEN', '100'))  # OPENFUND大额订单阈值
+LARGE_ORDER_THRESHOLD_DESO = float(os.getenv('LARGE_ORDER_THRESHOLD_OPEN', '100'))  # DESO大额订单阈值,用来锚定USDC
 MONITOR_INTERVAL = int(os.getenv('MONITOR_INTERVAL', '1'))  # 监控间隔（分钟）
+SELL_DOSE = float(os.getenv('SELL_DOSE', '1'))  # 低价提示该搬砖了
+SELL_DOSE_OPEN = float(os.getenv('SELL_DOSE_OPEN', '1'))  # OPENFUND低价提示该搬砖了
 
 # 代币地址
 FOCUS_PUBKEY = "BC1YLjEayZDjAPitJJX4Boy7LsEfN3sWAkYb3hgE9kGBirztsc2re1N"
 USDC_PUBKEY = "BC1YLiwTN3DbkU8VmD7F7wXcRR1tFX6jDEkLyruHD2WsH3URomimxLX"
 OPEN_PUBKEY = "BC1YLj3zNA7hRAqBVkvsTeqw7oi4H6ogKiAFL1VXhZy6pYeZcZ6TDRY"
+DESO_PUBKEY = "BC1YLbnP7rndL92x7DbLp6bkUpCgKmgoHgz7xEbwhgHTps3ZrXA6LtQ"
+
 def send_notification(title: str, message: str) -> None:
     """发送通知（使用Bark）"""
     # Bark通知
@@ -88,6 +93,64 @@ def check_price_alerts() -> None:
             current_pubkey = base58_check_encode(client.deso_keypair.public_key, IS_TESTNET)
             print(f'\n当前账号公钥: {current_pubkey}')
 
+            # 获取DESO订单簿------------------------------------------------------------------------------------------------------
+            order_book = get_order_book(client, DESO_PUBKEY, USDC_PUBKEY)
+            if not order_book or 'buy_orders' not in order_book:
+                return
+            buy_orders = order_book['buy_orders']
+            deso_prices = [float(order['Price']) for order in buy_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD_DESO]
+
+            # 获取DESO价格
+            if len(deso_prices) < 1:
+                deso_buy_price = None
+            else:
+                deso_buy_price = max(deso_prices)
+
+            # 搬砖检测------------------------------------------------------------------------------------------------------
+            if deso_buy_price is not None:
+                if ii == 0:
+                    order_book = get_order_book(client, FOCUS_PUBKEY, DESO_PUBKEY)
+                else:
+                    order_book = get_order_book(client, OPEN_PUBKEY, DESO_PUBKEY)
+                if not order_book or 'sell_orders' not in order_book:
+                    return
+
+                sell_orders = order_book['sell_orders']
+
+                # 先筛选出所有的大额订单
+                if ii == 0:
+                    large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD]
+                else:
+                    large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD_OPEN]
+                found_orders = []
+                for order in large_orders:
+                    if order['TransactorPublicKeyBase58Check'] != TARGET_WALLET:
+                        # 转换成USDC的价格
+                        price = float(order['Price']) * deso_buy_price
+                        quantity = float(order['Quantity'])
+                        if ii == 0 and price < SELL_DOSE:
+                            found_orders.append({
+                                'price': price,
+                                'quantity': quantity,
+                                'wallet': order['TransactorPublicKeyBase58Check']
+                            })
+                        elif ii == 1 and price < SELL_DOSE_OPEN:
+                            found_orders.append({
+                                'price': price,
+                                'quantity': quantity,
+                                'wallet': order['TransactorPublicKeyBase58Check']
+                            })
+
+                if found_orders:
+                    message = "发现可搬砖！\n" + "\n".join(
+                        f"价格: {order['price']:.8f}\n数量: {order['quantity']:.1f}\n钱包: {order['wallet'][:8]}..."
+                        for order in found_orders
+                    )
+                    send_notification("搬砖提醒", message)
+                    print(f"\n[{datetime.now()}] {message}")
+
+
+            # 插队检测------------------------------------------------------------------------------------------------------
             # 获取订单簿
             if ii == 0:
                 order_book = get_order_book(client, FOCUS_PUBKEY, USDC_PUBKEY)
@@ -97,7 +160,6 @@ def check_price_alerts() -> None:
                 return
 
             sell_orders = order_book['sell_orders']
-
             # 找到目标钱包的最低价格
             target_orders = [order for order in sell_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET]
             if not target_orders:
@@ -105,17 +167,17 @@ def check_price_alerts() -> None:
                 return
 
             # 先筛选出所有的大额订单
-
             if ii == 0:
                 large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD]
             else:
                 large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD_OPEN]
-                # for order in sell_orders:
-                #     print(order['TransactorPublicKeyBase58Check'],float(order['Price']),float(order['Quantity']))
             print(f"大额订单数量: {len(large_orders)}")
 
             # 找出target_min_price
-            target_min_price = min(float(order['Price']) for order in large_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET)
+            target_prices = [float(order['Price']) for order in large_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET]
+            if len(target_prices)< 1:
+                continue
+            target_min_price = min(target_prices)
             print(f"目标钱包最低价格: {target_min_price:.6f}")
 
             # 检查其他钱包的大额订单
@@ -134,7 +196,7 @@ def check_price_alerts() -> None:
 
             if found_orders:
                 message = "发现低价大额订单！\n" + "\n".join(
-                    f"价格: {order['price']:.6f}\n数量: {order['quantity']:.1f}\n钱包: {order['wallet'][:8]}..."
+                    f"价格: {order['price']:.8f}\n数量: {order['quantity']:.1f}\n钱包: {order['wallet'][:8]}..."
                     for order in found_orders
                 )
                 send_notification("订单簿提醒", message)
