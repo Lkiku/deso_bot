@@ -19,12 +19,13 @@ BARK_KEY = os.getenv('BARK_KEY')
 # 交易参数
 TARGET_WALLET = os.getenv('TARGET_WALLET')
 LARGE_ORDER_THRESHOLD = float(os.getenv('LARGE_ORDER_THRESHOLD', '100000'))  # 大额订单阈值
+LARGE_ORDER_THRESHOLD_OPEN = float(os.getenv('LARGE_ORDER_THRESHOLD_OPEN', '100'))  # 大额订单阈值
 MONITOR_INTERVAL = int(os.getenv('MONITOR_INTERVAL', '1'))  # 监控间隔（分钟）
 
 # 代币地址
 FOCUS_PUBKEY = "BC1YLjEayZDjAPitJJX4Boy7LsEfN3sWAkYb3hgE9kGBirztsc2re1N"
 USDC_PUBKEY = "BC1YLiwTN3DbkU8VmD7F7wXcRR1tFX6jDEkLyruHD2WsH3URomimxLX"
-
+OPEN_PUBKEY = "BC1YLj3zNA7hRAqBVkvsTeqw7oi4H6ogKiAFL1VXhZy6pYeZcZ6TDRY"
 def send_notification(title: str, message: str) -> None:
     """发送通知（使用Bark）"""
     # Bark通知
@@ -75,60 +76,69 @@ def check_price_alerts() -> None:
     try:
         if not SEED_PHRASE:
             raise ValueError("请在.env文件中设置DESO_SEED_PHRASE环境变量")
-
-        client = DeSoDexClient(
-            seed_phrase_or_hex=SEED_PHRASE,
-            is_testnet=IS_TESTNET,
-            index=INDEX,
-            node_url=NODE_URL
-        )
-
-        # 打印当前账号信息
-        current_pubkey = base58_check_encode(client.deso_keypair.public_key, IS_TESTNET)
-        print(f'\n当前账号公钥: {current_pubkey}')
-        
-        # 获取订单簿
-        order_book = get_order_book(client, FOCUS_PUBKEY, USDC_PUBKEY)
-        if not order_book or 'sell_orders' not in order_book:
-            return
-
-        sell_orders = order_book['sell_orders']
-        
-        # 找到目标钱包的最低价格
-        target_orders = [order for order in sell_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET]
-        if not target_orders:
-            print(f"未找到目标钱包 {TARGET_WALLET} 的订单")
-            return
-        
-        # 先筛选出所有的大额订单
-        large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD]
-        print(f"大额订单数量: {len(large_orders)}")
-        
-        # 找出target_min_price
-        target_min_price = min(float(order['Price']) for order in large_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET)
-        print(f"目标钱包最低价格: {target_min_price:.6f}")
-        
-        # 检查其他钱包的大额订单
-        found_orders = []
-        for order in large_orders:
-            if order['TransactorPublicKeyBase58Check'] != TARGET_WALLET:
-                price = float(order['Price'])
-                quantity = float(order['Quantity'])
-                
-                if price < target_min_price:
-                    found_orders.append({
-                        'price': price,
-                        'quantity': quantity,
-                        'wallet': order['TransactorPublicKeyBase58Check']
-                    })
-        
-        if found_orders:
-            message = "发现低价大额订单！\n" + "\n".join(
-                f"价格: {order['price']:.6f}\n数量: {order['quantity']:.1f}\n钱包: {order['wallet'][:8]}..."
-                for order in found_orders
+        for ii in range(2):
+            client = DeSoDexClient(
+                seed_phrase_or_hex=SEED_PHRASE,
+                is_testnet=IS_TESTNET,
+                index=INDEX,
+                node_url=NODE_URL
             )
-            send_notification("订单簿提醒", message)
-            print(f"\n[{datetime.now()}] {message}")
+
+            # 打印当前账号信息
+            current_pubkey = base58_check_encode(client.deso_keypair.public_key, IS_TESTNET)
+            print(f'\n当前账号公钥: {current_pubkey}')
+
+            # 获取订单簿
+            if ii == 0:
+                order_book = get_order_book(client, FOCUS_PUBKEY, USDC_PUBKEY)
+            else:
+                order_book = get_order_book(client, OPEN_PUBKEY, USDC_PUBKEY)
+            if not order_book or 'sell_orders' not in order_book:
+                return
+
+            sell_orders = order_book['sell_orders']
+
+            # 找到目标钱包的最低价格
+            target_orders = [order for order in sell_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET]
+            if not target_orders:
+                print(f"未找到目标钱包 {TARGET_WALLET} 的订单")
+                return
+
+            # 先筛选出所有的大额订单
+
+            if ii == 0:
+                large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD]
+            else:
+                large_orders = [order for order in sell_orders if float(order['Quantity']) >= LARGE_ORDER_THRESHOLD_OPEN]
+                # for order in sell_orders:
+                #     print(order['TransactorPublicKeyBase58Check'],float(order['Price']),float(order['Quantity']))
+            print(f"大额订单数量: {len(large_orders)}")
+
+            # 找出target_min_price
+            target_min_price = min(float(order['Price']) for order in large_orders if order['TransactorPublicKeyBase58Check'] == TARGET_WALLET)
+            print(f"目标钱包最低价格: {target_min_price:.6f}")
+
+            # 检查其他钱包的大额订单
+            found_orders = []
+            for order in large_orders:
+                if order['TransactorPublicKeyBase58Check'] != TARGET_WALLET:
+                    price = float(order['Price'])
+                    quantity = float(order['Quantity'])
+
+                    if price < target_min_price:
+                        found_orders.append({
+                            'price': price,
+                            'quantity': quantity,
+                            'wallet': order['TransactorPublicKeyBase58Check']
+                        })
+
+            if found_orders:
+                message = "发现低价大额订单！\n" + "\n".join(
+                    f"价格: {order['price']:.6f}\n数量: {order['quantity']:.1f}\n钱包: {order['wallet'][:8]}..."
+                    for order in found_orders
+                )
+                send_notification("订单簿提醒", message)
+                print(f"\n[{datetime.now()}] {message}")
 
     except Exception as e:
         error_msg = f"检查价格失败: {str(e)}"
@@ -145,15 +155,15 @@ def main() -> None:
     try:
         # 立即执行一次
         check_price_alerts()
-        
+
         # 定时执行
         schedule.every(MONITOR_INTERVAL).minutes.do(check_price_alerts)
-        
+
         print("\n监控已启动，按Ctrl+C停止...")
         while True:
             schedule.run_pending()
             time.sleep(1)
-            
+
     except KeyboardInterrupt:
         print("\n监控已停止")
     except Exception as e:
@@ -161,7 +171,7 @@ def main() -> None:
         print(f"\n{error_msg}")
         send_notification("错误提醒", error_msg)
 
-    # send_notification("订单簿提醒", "测试通知")
+    #send_notification("订单簿提醒", "测试通知")
 
 if __name__ == "__main__":
     main()
